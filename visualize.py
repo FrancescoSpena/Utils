@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
         description="Visualize mesh, trajectory, and/or point cloud in Rerun.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--mesh", type=str, required=True,
+    p.add_argument("--mesh", type=str, default=None,
                    help="Path to .ply mesh file")
     p.add_argument("--traj", type=str, default=None,
                    help="Trajectory file: each line with 16 floats (4x4 c2w, row-major)")
@@ -106,36 +106,38 @@ def _traj_gradient(n: int, mode: str = "rb") -> np.ndarray:
 def main() -> None:
     args = parse_args()
 
-    if not os.path.exists(args.mesh):
+    if args.mesh is not None and not os.path.exists(args.mesh):
         raise FileNotFoundError(f"Mesh not found: {args.mesh}")
     if args.traj is not None and not os.path.exists(args.traj):
         print(f"[WARN] Trajectory file not found: {args.traj}")
     if args.cloud is not None and not os.path.exists(args.cloud):
         print(f"[WARN] Point cloud file not found: {args.cloud}")
 
-    # --- load mesh ---
-    mesh = o3d.io.read_triangle_mesh(args.mesh)
-    if mesh.is_empty():
-        raise RuntimeError(f"Mesh empty or unreadable: {args.mesh}")
-
-    vertices = np.asarray(mesh.vertices, dtype=np.float32)
-    triangles = np.asarray(mesh.triangles, dtype=np.int32)
-    colors: Optional[np.ndarray] = None
-    if mesh.has_vertex_colors():
-        colors = _to_uint8_colors(np.asarray(mesh.vertex_colors, dtype=np.float32))
-
     # --- init Rerun ---
     rr.init("ply_viewer", spawn=args.spawn)
+    
+    # --- mesh (optional) ---
+    if args.mesh is not None:
+        mesh = o3d.io.read_triangle_mesh(args.mesh)
+        if mesh.is_empty():
+            raise RuntimeError(f"Mesh empty or unreadable: {args.mesh}")
 
-    # --- log mesh ---
-    rr.log(
-        "scene/mesh",
-        rr.Mesh3D(
-            vertex_positions=vertices,
-            triangle_indices=triangles,
-            vertex_colors=colors,
-        ),
-    )
+        vertices = np.asarray(mesh.vertices, dtype=np.float32)
+        triangles = np.asarray(mesh.triangles, dtype=np.int32)
+        colors: Optional[np.ndarray] = None
+        if mesh.has_vertex_colors():
+            colors = _to_uint8_colors(np.asarray(mesh.vertex_colors, dtype=np.float32))
+
+
+        # --- log mesh ---
+        rr.log(
+            "scene/mesh",
+            rr.Mesh3D(
+                vertex_positions=vertices,
+                triangle_indices=triangles,
+                vertex_colors=colors,
+            ),
+        )
 
     # --- trajectory (optional) ---
     if args.traj and os.path.exists(args.traj):

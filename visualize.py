@@ -160,6 +160,7 @@ def main() -> None:
     # --- point cloud (optional) ---
     if args.cloud and os.path.exists(args.cloud):
         pcd = o3d.io.read_point_cloud(args.cloud)
+        print(f"Number of Points: {len(pcd.points)}")
         if pcd.is_empty():
             print(f"[WARN] Empty point cloud: {args.cloud}")
         else:

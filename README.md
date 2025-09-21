@@ -31,12 +31,12 @@ pip install open3d==0.17.0 rerun-sdk numpy
 ## Usage
 
 ```bash
-python visualize.py --mesh PATH/mesh.ply [--traj PATH/traj.txt] [--cloud PATH/cloud.ply]
+python visualize.py [--mesh PATH/mesh.ply] [--traj PATH/traj.txt] [--cloud PATH/cloud.ply]
 ```
 
 ### Main arguments
 
-- `--mesh` (required): `.ply` mesh file.
+- `--mesh` (optional): `.ply` mesh file.
 - `--traj` (optional): trajectory text file.  
   Each line must contain **16 floats** = 4×4 `c2w` matrix (row-major).  
   Empty lines or lines starting with `#` are ignored.

@@ -16,6 +16,8 @@ import trimesh
 
 from pathlib import Path
 
+import open3d as o3d
+
 DESCRIPTION = """
 # ARKitScenes
 This example visualizes the [ARKitScenes dataset](https://github.com/apple/ARKitScenes/) using Rerun. The dataset
@@ -42,10 +44,6 @@ def load_poses(traj_file: Path) -> list[rr.Transform3D]:
                 continue
             c2w = np.array(vals, dtype=np.float32).reshape(4, 4)
 
-            # # Replica fix
-            # c2w[:3, 1] *= -1
-            # c2w[:3, 2] *= -1
-
             # inverti per ottenere world->camera
             w2c = np.linalg.inv(c2w)
 
@@ -64,33 +62,17 @@ def load_poses(traj_file: Path) -> list[rr.Transform3D]:
     return poses
 
 
-def visible_points(points_world: np.ndarray, colors: np.ndarray,
-                   c2w: np.ndarray, intrinsics: np.ndarray,
-                   width: int, height: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Restituisce indici, punti e colori visibili dalla camera.
-    """
-
-
-    homog = np.hstack([points_world, np.ones((points_world.shape[0], 1))])
-    points_cam = (c2w @ homog.T).T[:, :3]
-
-    # davanti alla camera
-    mask = points_cam[:, 2] > 0.1
-
-    # proiezione
-    fx, fy, cx, cy = intrinsics[0, 0], intrinsics[1, 1], intrinsics[0, 2], intrinsics[1, 2]
-    u = (fx * points_cam[:, 0] / points_cam[:, 2] + cx).astype(int)
-    v = (fy * points_cam[:, 1] / points_cam[:, 2] + cy).astype(int)
-
-    inside = (u >= 0) & (u < width) & (v >= 0) & (v < height)
-    idx = np.where(mask & inside)[0]
-
-    return idx, points_world[idx], colors[idx]
-
-
-
-
+def load_w2c_matrices(traj_file: Path) -> list[np.ndarray]:
+    matrices = []
+    with open(traj_file, "r") as f:
+        for line in f:
+            vals = [float(x) for x in line.strip().split()]
+            if len(vals) != 16:
+                continue
+            c2w = np.array(vals, dtype=np.float64).reshape(4, 4)
+            w2c = np.linalg.inv(c2w)
+            matrices.append(w2c)
+    return matrices
 
 def log_office2(recording_dir: Path, frames: int) -> None:
     rr.log("description", rr.TextDocument("Replica office2 dataset", media_type=rr.MediaType.MARKDOWN), static=True)
@@ -100,103 +82,73 @@ def log_office2(recording_dir: Path, frames: int) -> None:
     print(f"[DEBUG] Looking for mesh in: {recording_dir / 'office2_default.ply'}")
     print(f"[DEBUG] Looking for images in: {recording_dir / 'results'}")
 
+    volume = o3d.pipelines.integration.ScalableTSDFVolume(
+        voxel_length=0.02,  
+        sdf_trunc=0.15,      
+        color_type=o3d.pipelines.integration.TSDFVolumeColorType.RGB8,
+    )
+
+    intrinsic = o3d.camera.PinholeCameraIntrinsic(
+        RESOLUTION[0], RESOLUTION[1],
+        INTRINSIC[0, 0], INTRINSIC[1, 1],
+        INTRINSIC[0, 2], INTRINSIC[1, 2]
+    )
+
     
-    # Paths
     traj_file = recording_dir / "traj.txt"
-    mesh_file = recording_dir / "office2_default.ply"
     results_dir = recording_dir / "results"
 
-    # Carica poses
     poses = load_poses(traj_file)
+    w2c_matrices = load_w2c_matrices(traj_file=traj_file)
 
-    # Carica mesh
-    print(f"[DEBUG] Loaded {len(poses)} poses")
-    if mesh_file.exists():
-        mesh = trimesh.load(str(mesh_file))
-        print(f"[DEBUG] Mesh loaded with {len(mesh.vertices)} vertices and {len(mesh.faces)} faces")
-        rr.log(
-            "world/mesh",
-            rr.Mesh3D(
-                vertex_positions=mesh.vertices,
-                vertex_colors=mesh.visual.vertex_colors,
-                triangle_indices=mesh.faces,
-            ),
-            static=True,
-        )
-
-    # Carica immagini
     depth_files = sorted(results_dir.glob("depth*.png"))
     rgb_files   = sorted(results_dir.glob("frame*.jpg")) + sorted(results_dir.glob("frame*.jpeg"))
     rgb_files   = sorted(rgb_files)
 
     print(f"[DEBUG] Found {len(rgb_files)} RGB images, {len(depth_files)} Depth images")
 
-    if frames < len(rgb_files):
-        rgb_files = rgb_files[:frames]
-        depth_files = depth_files[:frames]
-        poses = poses[:frames]
-    
-    ply_file = recording_dir / "final_point_cloud.ply"
-    points_world, colors = None, None
-
-    if ply_file.exists():
-        cloud = trimesh.load(str(ply_file))
-        points_world = np.array(cloud.vertices)  # [N, 3] in world coordinates
-        if hasattr(cloud.visual, "vertex_colors"):
-            colors = np.array(cloud.visual.vertex_colors[:, :3]) / 255.0
-        else:
-            colors = np.tile(np.array([[0.7, 0.7, 0.7]]), (len(points_world), 1))  # grigio se no colori
-        print(f"[DEBUG] Loaded point cloud: {points_world.shape[0]} punti")
-    else:
-        print("[WARNING] final_point_cloud.ply non trovato!")
-    
-
 
     rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Y_UP, static=True)
-    seen_faces = set()
 
     
-    for idx, (rgb_path, depth_path, pose) in enumerate(zip(rgb_files, depth_files, poses)):
+    for idx, (rgb_path, depth_path, pose, w2c) in enumerate(zip(rgb_files, depth_files, poses, w2c_matrices)):
         rr.set_time("frame", sequence=idx)
 
+        # Log della camera in Rerun
         rr.log("world/camera", pose)
         rr.log("world/camera",
             rr.Pinhole(image_from_camera=INTRINSIC, resolution=RESOLUTION))
 
         img_bgr = cv2.imread(str(rgb_path), cv2.IMREAD_COLOR)
         img_depth = cv2.imread(str(depth_path), cv2.IMREAD_UNCHANGED)
-
         rr.log("world/camera/rgb", rr.Image(img_bgr, color_model="BGR").compress(jpeg_quality=90))
         rr.log("world/camera/depth", rr.DepthImage(img_depth, meter=DEPTH_SCALE))
 
+        color_o3d = o3d.io.read_image(str(rgb_path))
+        depth_o3d = o3d.io.read_image(str(depth_path))
+        rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
+            color_o3d, depth_o3d,
+            depth_scale=DEPTH_SCALE,
+            depth_trunc=10.0,
+            convert_rgb_to_intensity=False,
+        )
 
-        if points_world is not None:
-            vals = [float(x) for x in open(traj_file).readlines()[idx].split()]
-            c2w = np.array(vals, dtype=np.float32).reshape(4, 4)
-            c2w[:3, 1] *= -1
-            c2w[:3, 2] *= -1
+        volume.integrate(rgbd, intrinsic, w2c)
 
-            visible_idx, _, _ = visible_points(mesh.vertices, mesh.vertices, c2w,
-                                                        INTRINSIC, RESOLUTION[0], RESOLUTION[1])
-
-            visible_face_mask = np.isin(mesh.faces, visible_idx).any(axis=1)
-            new_faces = np.where(visible_face_mask)[0]
-            seen_faces.update(new_faces)
-
-            progressive_mesh = trimesh.Trimesh(
-                vertices=mesh.vertices,
-                faces=mesh.faces[list(seen_faces)],
-                process=False
-            )
-
+        if idx % 50 == 0:
+            mesh_temp = volume.extract_triangle_mesh()
+            mesh_temp.compute_vertex_normals()
             rr.log(
-                "world/progressive_mesh",
+                "world/mesh_progressive",
                 rr.Mesh3D(
-                    vertex_positions=progressive_mesh.vertices,
-                    triangle_indices=progressive_mesh.faces,
-                    vertex_colors=mesh.visual.vertex_colors if hasattr(mesh.visual, "vertex_colors") else None
+                    vertex_positions=np.asarray(mesh_temp.vertices),
+                    triangle_indices=np.asarray(mesh_temp.triangles),
+                    vertex_colors=np.asarray(mesh_temp.vertex_colors),
                 )
             )
+
+
+
 
 
 
